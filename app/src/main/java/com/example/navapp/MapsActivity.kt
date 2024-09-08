@@ -11,8 +11,14 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.location.Location
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
+import android.text.Html
+import android.view.animation.LinearInterpolator
+import androidx.core.text.HtmlCompat
+
 
 
 import androidx.appcompat.app.AppCompatActivity
@@ -27,6 +33,8 @@ import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.Marker
 import com.google.android.gms.maps.model.MarkerOptions
 import com.google.android.gms.maps.model.PolylineOptions
+//import com.google.android.gms.maps.CameraUpdateFactory
+import com.google.android.gms.maps.model.CameraPosition
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -57,6 +65,37 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         private val client = OkHttpClient()
     }
 
+    private var currentTilt = 0f  // Initial tilt (can adjust if needed)
+    private var currentBearing = 0f  // Initial bearing
+
+    // Adjust tilt (vertical rotation)
+    private fun adjustTilt(tiltChange: Float) {
+        currentTilt = (currentTilt + tiltChange).coerceIn(0f, 60f)  // Limit tilt between 0 and 90 degrees
+        Log.d("MapTilt", "Adjusting tilt to: $currentTilt")
+        val cameraPosition = CameraPosition.Builder()
+            .target(mMap.cameraPosition.target)
+            .zoom(mMap.cameraPosition.zoom)
+            .tilt(currentTilt)  // Apply new tilt
+            .bearing(currentBearing)  // Keep the same bearing
+            .build()
+
+        mMap.animateCamera(CameraUpdateFactory.newCameraPosition(cameraPosition))
+    }
+
+    // Adjust bearing (horizontal rotation)
+    private fun adjustBearing(bearingChange: Float) {
+        currentBearing = (currentBearing + bearingChange) % 360  // Keep bearing between 0 and 360 degrees
+
+        val cameraPosition = CameraPosition.Builder()
+            .target(mMap.cameraPosition.target)
+            .zoom(mMap.cameraPosition.zoom)
+            .tilt(currentTilt)  // Keep the same tilt
+            .bearing(currentBearing)  // Apply new bearing
+            .build()
+
+        mMap.animateCamera(CameraUpdateFactory.newCameraPosition(cameraPosition))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMapsBinding.inflate(layoutInflater)
@@ -79,6 +118,12 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         } else {
             Log.e("MapsActivity", "Magnetometer not available")
         }
+
+        val buttonLeft: Button = findViewById(R.id.button_left)
+        val buttonRight: Button = findViewById(R.id.button_right)
+
+        buttonLeft.setOnClickListener { adjustBearing(-10f) }
+        buttonRight.setOnClickListener { adjustBearing(10f) }
 
         // Initialize UI elements
         navigationInfoTextView = findViewById(R.id.navigation_info)
@@ -111,7 +156,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
             val azimuth = Math.toDegrees(orientation[0].toDouble()).toFloat() // Azimuth in degrees
 
             // You can log the azimuth or update your UI with it
-            Log.d("MapsActivity", "Azimuth: $azimuth°")
+//            Log.d("MapsActivity", "Azimuth: $azimuth°")
         }
     }
 
@@ -136,7 +181,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         mMap = googleMap
         val startLocation = LatLng(32.794044, 34.989571) // Example starting point in Haifa
         mMap.addMarker(MarkerOptions().position(startLocation).title("Start Point"))
-        mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(startLocation, 15f))
+        mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(startLocation, 10f))
         mMap.uiSettings.isZoomControlsEnabled = true
         mMap.isTrafficEnabled = true
         mMap.uiSettings.isTiltGesturesEnabled = true
@@ -243,45 +288,66 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         return poly
     }
 
-    private fun simulateNavigation() {
-        var index = 0
-        currentLatLng =
-            route.firstOrNull()  // Initialize with the first point in the route or null if the route is empty
-        val delayMillis: Long = 1000  // Delay between movements (1 second)
+    // Function to calculate the distance between two LatLng points
+    private fun calculateDistance(point1: LatLng, point2: LatLng): Float {
+        val results = FloatArray(1)
+        Location.distanceBetween(
+            point1.latitude,
+            point1.longitude,
+            point2.latitude,
+            point2.longitude,
+            results
+        )
+        return results[0]  // Return distance in meters
+    }
 
-        // Initialize marker at the first route point
+
+    private fun simulateNavigation() {
+        var routeIndex = 0
+        var currentLatLng: LatLng? = route.firstOrNull()
+
         currentLatLng?.let {
             marker = mMap.addMarker(MarkerOptions().position(it).title("Simulated Location"))
         }
 
-        val simulationSpeed = 30f  // Simulation speed in meters/second
-        val simulationDirection = 180f  // Direction in degrees
+        val simulationSpeed = 20f
+        val simulationDirection = 0f
+        currentTilt = 60f
+        //adjustTilt(60f) // Call adjustTilt to apply the change
+        val cameraPosition = CameraPosition.Builder()
+            .target(mMap.cameraPosition.target)
+            .zoom(mMap.cameraPosition.zoom)
+            .tilt(currentTilt)  // Apply new tilt
+            .bearing(currentBearing)  // Keep the same bearing
+            .build()
 
-        val runnable = object : Runnable {
+        mMap.animateCamera(CameraUpdateFactory.newCameraPosition(cameraPosition))
+
+        val initialRunnable = object : Runnable {
             override fun run() {
-                if (index < route.size) {
-                    val currentPoint = route[index]
-                    Log.d(
-                        "Navigation Simulate",
-                        "Current index: $index, Point: ${currentPoint.latitude}, ${currentPoint.longitude}"
-                    )
+                if (routeIndex < route.size) {
+                    val currentPoint = route[routeIndex]
+                    Log.d("Simulation", "Current tilt: $currentTilt")
+                    // Use currentLatLng if available, otherwise use the original point from the route
+                    val lat = currentLatLng?.latitude ?: currentPoint.latitude
+                    val lng = currentLatLng?.longitude ?: currentPoint.longitude
+
                     updateLocationToServer(
-                        currentPoint.latitude,
-                        currentPoint.longitude,
+                        lat,
+                        lng,
                         simulationSpeed,
                         simulationDirection,
                         route,
-                        index,
-                        this
+                        routeIndex
                     )
-                    index++
                 } else {
                     Log.d("Navigation", "End of route reached.")
                     handler.removeCallbacks(this)
                 }
             }
         }
-        handler.post(runnable)
+
+        handler.post(initialRunnable)
     }
 
     fun updateLocationToServer(
@@ -289,21 +355,9 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         lng: Double,
         speed: Float,
         direction: Float,
-        route: List<LatLng>,  // Include the route in the parameters
-        index: Int,
-        runnable: Runnable
+        route: List<LatLng>,
+        index: Int
     ) {
-        // Convert route list to JSON array
-        val routeJsonArray = org.json.JSONArray().apply {
-            route.forEach { point ->
-                put(JSONObject().apply {
-                    put("x", point.latitude)
-                    put("y", point.longitude)
-                })
-            }
-        }
-
-        // Create the JSON payload
         val json = JSONObject().apply {
             put("location", JSONObject().apply {
                 put("x", lat)
@@ -311,19 +365,15 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
             })
             put("speed", speed)
             put("direction", direction)
-            put("time", System.currentTimeMillis() / 1000)  // Timestamp in seconds
-            put("expected_path_points", routeJsonArray)  // Add the route as expected path points
+            put("time", System.currentTimeMillis() / 1000)
         }
 
-        // Create the request
-        val requestBody =
-            json.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+        val requestBody = json.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
         val request = Request.Builder()
-            .url("http://10.0.2.2:5000/update")  // Adjusted for local testing with the Android emulator
+            .url("http://10.0.2.2:5000/update")
             .post(requestBody)
             .build()
 
-        // Execute the request
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 Log.e("Navigation Update", "Failed to send location: ${e.message}")
@@ -333,7 +383,10 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                         "Failed to update location",
                         Toast.LENGTH_SHORT
                     ).show()
-                    handler.postDelayed(runnable, 1000)  // Retry or continue simulation
+                    // Retry after a delay on failure
+                    handler.postDelayed({
+                        updateLocationToServer(lat, lng, speed, direction, route, index)
+                    }, 1000)
                 }
             }
 
@@ -345,21 +398,60 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                         val newLocation = respJSON?.getJSONObject("new_location")
                         val newX = newLocation?.getDouble("x")
                         val newY = newLocation?.getDouble("y")
+
                         Log.d(
                             "Navigation Update",
                             "Successful response: New Location - Latitude: $newX, Longitude: $newY"
                         )
 
                         handler.post {
-                            val updatedLatLng = newX?.let { it1 -> newY?.let { it2 ->
-                                LatLng(it1,
-                                    it2
-                                )
-                            } }
-                            currentLatLng = updatedLatLng  // Save the new location
-                            marker?.position = updatedLatLng!!
-                            mMap.moveCamera(CameraUpdateFactory.newLatLng(updatedLatLng))
-                            handler.postDelayed(runnable, 1000)  // Schedule the next iteration
+                            if (newX != null && newY != null) {
+                                currentLatLng = LatLng(newX, newY)
+
+                                val currentLocation = currentLatLng
+
+                                animateMarker(marker!!, currentLocation!!)
+
+                                // Build a new CameraPosition with the desired tilt
+                                val cameraPosition = CameraPosition.Builder()
+                                    .target(currentLocation)
+                                    .zoom(mMap.cameraPosition.zoom)
+                                    .tilt(currentTilt)
+                                    .build()
+
+                                mMap.animateCamera(CameraUpdateFactory.newCameraPosition(cameraPosition))
+
+                                val cameraPositionAfterUpdate = mMap.cameraPosition
+                                Log.d("CameraPosition", "Target: ${cameraPositionAfterUpdate.target}, Zoom: ${cameraPositionAfterUpdate.zoom}, Tilt: ${cameraPositionAfterUpdate.tilt}, Bearing: ${cameraPositionAfterUpdate.bearing}")
+
+                                val updatedRunnable = object : Runnable {
+                                    override fun run() {
+                                        if (index < route.size) {
+                                            val currentPoint = route[index]
+
+                                            val lat = currentLatLng?.latitude ?: currentPoint.latitude
+                                            val lng = currentLatLng?.longitude ?: currentPoint.longitude
+
+                                            updateLocationToServer(
+                                                lat,
+                                                lng,
+                                                speed,
+                                                direction,
+                                                route,
+                                                index + 1
+                                            )
+                                        } else {
+                                            Log.d("Navigation", "End of route reached.")
+                                            handler.removeCallbacks(this)
+                                        }
+                                    }
+                                }
+
+                                handler.postDelayed(updatedRunnable, 1000)
+
+                            } else {
+                                Log.e("Navigation Update", "Received null for new coordinates")
+                            }
                         }
                     } else {
                         Log.e("Navigation Update", "Server error: ${response.code}")
@@ -369,13 +461,41 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                                 "Error updating location",
                                 Toast.LENGTH_SHORT
                             ).show()
-                            handler.postDelayed(runnable, 1000)  // Retry or continue simulation
+                            // Retry after a delay on server error
+                            handler.postDelayed({
+                                updateLocationToServer(lat, lng, speed, direction, route, index)
+                            }, 1000)
                         }
                     }
                 }
             }
         })
     }
+
+
+    private fun animateMarker(marker: Marker, toPosition: LatLng) {
+        val startPosition = marker.position
+        val handler = Handler(Looper.getMainLooper())
+        val start = SystemClock.uptimeMillis()
+        val duration = 300L  // 0.3 second
+
+        val interpolator = LinearInterpolator()
+
+        handler.post(object : Runnable {
+            override fun run() {
+                val elapsed = SystemClock.uptimeMillis() - start
+                val t = elapsed / duration.toFloat()
+                val lat = t * toPosition.latitude + (1 - t) * startPosition.latitude
+                val lng = t * toPosition.longitude + (1 - t) * startPosition.longitude
+                marker.position = LatLng(lat, lng)
+
+                if (t < 1.0) {
+                    handler.postDelayed(this, 16)
+                }
+            }
+        })
+    }
+
 }
 
     data class Step(val description: String, val distance: String)
