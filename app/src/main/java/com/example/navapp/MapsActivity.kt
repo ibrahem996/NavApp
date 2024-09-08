@@ -311,16 +311,14 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         }
 
         val simulationSpeed = 20f
-        val simulationDirection = 0f
+        val simulationDirection = 270f
         currentTilt = 60f
-        //adjustTilt(60f) // Call adjustTilt to apply the change
         val cameraPosition = CameraPosition.Builder()
             .target(mMap.cameraPosition.target)
             .zoom(mMap.cameraPosition.zoom)
             .tilt(currentTilt)  // Apply new tilt
             .bearing(currentBearing)  // Keep the same bearing
             .build()
-
         mMap.animateCamera(CameraUpdateFactory.newCameraPosition(cameraPosition))
 
         val initialRunnable = object : Runnable {
