@@ -2,39 +2,31 @@ package com.example.navapp
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.os.Handler
-import android.os.Looper
-import android.widget.Button
-import android.widget.TextView
-import android.widget.Toast
+import android.hardware.GeomagneticField
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.location.Location
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
-import android.util.Log
 import android.text.Html
+import android.util.Log
 import android.view.animation.LinearInterpolator
-import androidx.core.text.HtmlCompat
-
-
-
+import android.widget.Button
+import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.text.HtmlCompat
 import com.example.navapp.databinding.ActivityMapsBinding
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.OnMapReadyCallback
 import com.google.android.gms.maps.SupportMapFragment
-import com.google.android.gms.maps.model.LatLng
-import com.google.android.gms.maps.model.Marker
-import com.google.android.gms.maps.model.MarkerOptions
-import com.google.android.gms.maps.model.PolylineOptions
-//import com.google.android.gms.maps.CameraUpdateFactory
-import com.google.android.gms.maps.model.CameraPosition
+import com.google.android.gms.maps.model.*
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -42,6 +34,7 @@ import org.json.JSONObject
 import java.io.IOException
 
 class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListener {
+
     private var currentLatLng: LatLng? = null
     private lateinit var mMap: GoogleMap
     private lateinit var binding: ActivityMapsBinding
@@ -54,43 +47,55 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
     private lateinit var sensorManager: SensorManager
     private var accelerometer: Sensor? = null
     private var magnetometer: Sensor? = null
-    private val gravity = FloatArray(3)
-    private val geomagnetic = FloatArray(3)
+    private var gravity: FloatArray? = null
+    private var geomagnetic: FloatArray? = null
+    private var rotationVectorSensor: Sensor? = null
     private val orientation = FloatArray(3)
     private val rotationMatrix = FloatArray(9)
-
 
     companion object {
         private const val REQUEST_CODE_LOCATION_PERMISSION = 100
         private val client = OkHttpClient()
     }
 
-    private var currentTilt = 0f  // Initial tilt (can adjust if needed)
+    private var currentAzimuth: Float = 0f
+    private var currentTilt = 0f  // Initial tilt
     private var currentBearing = 0f  // Initial bearing
 
-    // Adjust tilt (vertical rotation)
+    private val ALPHA = 0.25f
+
+    // Low-Pass Filter function to smooth sensor data
+    private fun lowPass(input: FloatArray, output: FloatArray?): FloatArray {
+        if (output == null) return input.clone()
+        for (i in input.indices) {
+            output[i] = output[i] + ALPHA * (input[i] - output[i])
+        }
+        return output
+    }
+
+    // Adjust the tilt of the camera (vertical rotation)
     private fun adjustTilt(tiltChange: Float) {
-        currentTilt = (currentTilt + tiltChange).coerceIn(0f, 60f)  // Limit tilt between 0 and 90 degrees
+        currentTilt = (currentTilt + tiltChange).coerceIn(0f, 60f)  // Limit tilt between 0 and 60 degrees
         Log.d("MapTilt", "Adjusting tilt to: $currentTilt")
         val cameraPosition = CameraPosition.Builder()
             .target(mMap.cameraPosition.target)
             .zoom(mMap.cameraPosition.zoom)
-            .tilt(currentTilt)  // Apply new tilt
-            .bearing(currentBearing)  // Keep the same bearing
+            .tilt(currentTilt)
+            .bearing(currentBearing)
             .build()
 
         mMap.animateCamera(CameraUpdateFactory.newCameraPosition(cameraPosition))
     }
 
-    // Adjust bearing (horizontal rotation)
+    // Adjust the bearing of the camera (horizontal rotation)
     private fun adjustBearing(bearingChange: Float) {
-        currentBearing = (currentBearing + bearingChange) % 360  // Keep bearing between 0 and 360 degrees
+        currentBearing = (currentBearing + bearingChange) % 360  // Bearing between 0 and 360 degrees
 
         val cameraPosition = CameraPosition.Builder()
             .target(mMap.cameraPosition.target)
             .zoom(mMap.cameraPosition.zoom)
-            .tilt(currentTilt)  // Keep the same tilt
-            .bearing(currentBearing)  // Apply new bearing
+            .tilt(currentTilt)
+            .bearing(currentBearing)
             .build()
 
         mMap.animateCamera(CameraUpdateFactory.newCameraPosition(cameraPosition))
@@ -101,23 +106,24 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         binding = ActivityMapsBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // Initialize the SensorManager
+        // Initialize SensorManager
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         magnetometer = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
+        rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
 
-        // Register listeners only if the sensors are available
-        if (accelerometer != null) {
-            sensorManager.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_UI)
-        } else {
-            Log.e("MapsActivity", "Accelerometer not available")
-        }
+        // Register listeners for available sensors
+        accelerometer?.also {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+        } ?: Log.e("MapsActivity", "Accelerometer not available")
 
-        if (magnetometer != null) {
-            sensorManager.registerListener(this, magnetometer, SensorManager.SENSOR_DELAY_UI)
-        } else {
-            Log.e("MapsActivity", "Magnetometer not available")
-        }
+        magnetometer?.also {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+        } ?: Log.e("MapsActivity", "Magnetometer not available")
+
+        rotationVectorSensor?.also {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+        } ?: Log.e("MapsActivity", "Rotation Vector Sensor not available")
 
         val buttonLeft: Button = findViewById(R.id.button_left)
         val buttonRight: Button = findViewById(R.id.button_right)
@@ -125,43 +131,104 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         buttonLeft.setOnClickListener { adjustBearing(-10f) }
         buttonRight.setOnClickListener { adjustBearing(10f) }
 
-        // Initialize UI elements
+        // Initialize UI components
         navigationInfoTextView = findViewById(R.id.navigation_info)
         val mapFragment = supportFragmentManager.findFragmentById(R.id.map) as SupportMapFragment
         mapFragment.getMapAsync(this)
 
-        // Set up button click listener
+        // Navigation button listener
         val navigateButton: Button = findViewById(R.id.navigation_button)
         navigateButton.setOnClickListener {
             if (route.isNotEmpty()) simulateNavigation()
         }
     }
 
-
-
-
     override fun onSensorChanged(event: SensorEvent) {
         when (event.sensor.type) {
             Sensor.TYPE_ACCELEROMETER -> {
-                System.arraycopy(event.values, 0, gravity, 0, event.values.size)
+                gravity = lowPass(event.values, gravity)
             }
             Sensor.TYPE_MAGNETIC_FIELD -> {
-                System.arraycopy(event.values, 0, geomagnetic, 0, event.values.size)
+                geomagnetic = lowPass(event.values, geomagnetic)
+            }
+            Sensor.TYPE_ROTATION_VECTOR -> {
+                val rotationMatrix = FloatArray(9)
+                SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
+                val orientation = FloatArray(3)
+                SensorManager.getOrientation(rotationMatrix, orientation)
+                val azimuthInRadians = orientation[0]
+                var azimuthInDegrees = Math.toDegrees(azimuthInRadians.toDouble()).toFloat()
+                azimuthInDegrees = (azimuthInDegrees + 360) % 360  // Ensure the value is between 0 and 360
+
+                // Account for magnetic declination
+                val geoField = GeomagneticField(
+                    currentLatLng?.latitude?.toFloat() ?: 0f,
+                    currentLatLng?.longitude?.toFloat() ?: 0f,
+                    0f,
+                    System.currentTimeMillis()
+                )
+                val declination = geoField.declination
+                val trueNorthAzimuth = (azimuthInDegrees + declination) % 360
+                currentAzimuth = trueNorthAzimuth
+                // Update the camera bearing
+                currentBearing = trueNorthAzimuth
+                val cameraPosition = CameraPosition.Builder()
+                    .target(mMap.cameraPosition.target)
+                    .zoom(mMap.cameraPosition.zoom)
+                    .tilt(currentTilt)
+                    .bearing(currentBearing)
+                    .build()
+                mMap.animateCamera(CameraUpdateFactory.newCameraPosition(cameraPosition))
+
+                // Log the azimuth
+                Log.d("MapsActivity", "Azimuth (Rotation Vector): $trueNorthAzimuth°")
             }
         }
 
-        val success = SensorManager.getRotationMatrix(rotationMatrix, null, gravity, geomagnetic)
-        if (success) {
-            SensorManager.getOrientation(rotationMatrix, orientation)
-            val azimuth = Math.toDegrees(orientation[0].toDouble()).toFloat() // Azimuth in degrees
+        if (gravity != null && geomagnetic != null) {
+            val rotationMatrix = FloatArray(9)
+            val inclinationMatrix = FloatArray(9)
+            val success = SensorManager.getRotationMatrix(rotationMatrix, inclinationMatrix, gravity, geomagnetic)
+            if (success) {
+                val orientation = FloatArray(3)
+                SensorManager.getOrientation(rotationMatrix, orientation)
+                val azimuthInRadians = orientation[0]
+                var azimuthInDegrees = Math.toDegrees(azimuthInRadians.toDouble()).toFloat()
+                azimuthInDegrees = (azimuthInDegrees + 360) % 360  // Ensure the value is between 0 and 360
 
-            // You can log the azimuth or update your UI with it
-//            Log.d("MapsActivity", "Azimuth: $azimuth°")
+                // Account for magnetic declination
+                val geoField = GeomagneticField(
+                    currentLatLng?.latitude?.toFloat() ?: 0f,
+                    currentLatLng?.longitude?.toFloat() ?: 0f,
+                    0f,
+                    System.currentTimeMillis()
+                )
+                val declination = geoField.declination
+                val trueNorthAzimuth = (azimuthInDegrees + declination) % 360
+                currentAzimuth = trueNorthAzimuth
+                // Check if mMap is initialized before using it
+                if (::mMap.isInitialized) {
+                    // Update the camera bearing
+                    currentBearing = trueNorthAzimuth
+                    val cameraPosition = CameraPosition.Builder()
+                        .target(mMap.cameraPosition.target)
+                        .zoom(mMap.cameraPosition.zoom)
+                        .tilt(currentTilt)
+                        .bearing(currentBearing)
+                        .build()
+                    mMap.animateCamera(CameraUpdateFactory.newCameraPosition(cameraPosition))
+                } else {
+                    Log.d("MapsActivity", "mMap is not initialized yet.")
+                }
+
+                // Log the azimuth
+                Log.d("MapsActivity", "Azimuth: $trueNorthAzimuth°")
+            }
         }
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-        // You can handle accuracy changes here if needed
+        // Handle sensor accuracy changes if necessary
     }
 
     override fun onPause() {
@@ -173,13 +240,12 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         super.onResume()
         sensorManager.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_UI)
         sensorManager.registerListener(this, magnetometer, SensorManager.SENSOR_DELAY_UI)
+        sensorManager.registerListener(this, rotationVectorSensor, SensorManager.SENSOR_DELAY_UI)
     }
-
-
 
     override fun onMapReady(googleMap: GoogleMap) {
         mMap = googleMap
-        val startLocation = LatLng(32.794044, 34.989571) // Example starting point in Haifa
+        val startLocation = LatLng(32.794044, 34.989571) // Starting point in Haifa
         mMap.addMarker(MarkerOptions().position(startLocation).title("Start Point"))
         mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(startLocation, 10f))
         mMap.uiSettings.isZoomControlsEnabled = true
@@ -187,7 +253,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         mMap.uiSettings.isTiltGesturesEnabled = true
         mMap.uiSettings.isRotateGesturesEnabled = true
 
-        val destination = LatLng(32.0853, 34.7818) // Simulated destination example in Tel Aviv
+        val destination = LatLng(32.0853, 34.7818) // Destination example in Tel Aviv
         getDirections(startLocation, destination)
     }
 
@@ -311,7 +377,9 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         }
 
         val simulationSpeed = 20f
-        val simulationDirection = 270f
+        // val simulationDirection = currentAzimuth
+        Log.d("Simulation", "CurrentAzimuth in simulateNavigation: $currentAzimuth")
+
         currentTilt = 60f
         val cameraPosition = CameraPosition.Builder()
             .target(mMap.cameraPosition.target)
@@ -326,6 +394,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                 if (routeIndex < route.size) {
                     val currentPoint = route[routeIndex]
                     Log.d("Simulation", "Current tilt: $currentTilt")
+
                     // Use currentLatLng if available, otherwise use the original point from the route
                     val lat = currentLatLng?.latitude ?: currentPoint.latitude
                     val lng = currentLatLng?.longitude ?: currentPoint.longitude
@@ -334,7 +403,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                         lat,
                         lng,
                         simulationSpeed,
-                        simulationDirection,
+                        currentAzimuth,
                         route,
                         routeIndex
                     )
@@ -365,10 +434,11 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
             put("direction", direction)
             put("time", System.currentTimeMillis() / 1000)
         }
+        Log.d("UpdateLocation", "Sending direction: $direction")
 
         val requestBody = json.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
         val request = Request.Builder()
-            .url("http://10.0.2.2:5000/update")
+            .url("http://10.0.0.16:5000/update")
             .post(requestBody)
             .build()
 
@@ -434,7 +504,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                                                 lat,
                                                 lng,
                                                 speed,
-                                                direction,
+                                                currentAzimuth,
                                                 route,
                                                 index + 1
                                             )
@@ -496,4 +566,4 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
 
 }
 
-    data class Step(val description: String, val distance: String)
+data class Step(val description: String, val distance: String)

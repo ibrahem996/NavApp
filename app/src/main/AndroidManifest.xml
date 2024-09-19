@@ -5,6 +5,7 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <uses-feature android:name="android.hardware.sensor.compass" />
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- Optional: Include only if targeting earlier versions of Google Play services SDK -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
