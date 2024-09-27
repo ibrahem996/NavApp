@@ -4,7 +4,6 @@ plugins {
     id("com.google.android.libraries.mapsplatform.secrets-gradle-plugin")
 }
 
-
 android {
     namespace = "com.example.navapp"
     compileSdk = 34
@@ -45,7 +44,6 @@ android {
 }
 
 dependencies {
-
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
@@ -53,6 +51,16 @@ dependencies {
     implementation(libs.androidx.constraintlayout)
     implementation(libs.play.services.location)
     implementation(libs.okhttp)
+    //implementation("com.google.android.libraries.places:places:2.6.0")
+
+
+    // Corrected OBD-II library dependency
+//    implementation(libs.obd.java.api)
+//    implementation("com.github.pires:obd-java-api:1.0-RC21")
+// Corrected OBD-II library dependency with 'v' prefix
+    implementation("com.github.pires:obd-java-api:1.0-RC16")
+
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

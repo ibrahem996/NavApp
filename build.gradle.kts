@@ -4,7 +4,13 @@ plugins {
     alias(libs.plugins.jetbrains.kotlin.android) apply false
     alias(libs.plugins.google.android.libraries.mapsplatform.secrets.gradle.plugin) apply false
 }
+
 buildscript {
+    repositories {
+        google()
+        mavenCentral()
+        maven("https://jitpack.io") // Added JitPack repository
+    }
     dependencies {
         classpath("com.google.android.libraries.mapsplatform.secrets-gradle-plugin:secrets-gradle-plugin:2.0.1")
     }

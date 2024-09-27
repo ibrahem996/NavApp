@@ -7,6 +7,15 @@
     <uses-feature android:name="android.hardware.sensor.compass" />
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- bluetooth connection permissions -->
+    <!-- For Android versions below 31 -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+
+    <!-- For Android 12 (API level 31) and above -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+
     <!-- Optional: Include only if targeting earlier versions of Google Play services SDK -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
 

@@ -11,22 +11,38 @@
         android:id="@+id/map"
         android:name="com.google.android.gms.maps.SupportMapFragment"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"/>
+        android:layout_height="match_parent" />
 
     <!-- TextView to display next step direction and distance -->
     <TextView
         android:id="@+id/navigation_info"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_alignParentTop="true"
-        android:layout_centerHorizontal="true"
-        android:text="Next Step: "
+        android:text="Next Step:"
         android:textSize="18sp"
         android:textColor="@android:color/black"
         android:background="@android:color/white"
         android:padding="10dp"
         android:elevation="8dp"
-        android:layout_marginTop="16dp"/>
+        android:layout_alignParentTop="true"
+        android:layout_centerHorizontal="true"
+        android:layout_marginTop="16dp" />
+
+    <!-- TextView to display current speed -->
+    <TextView
+        android:id="@+id/speed_text_view"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Speed: 0 km/h"
+        android:textSize="18sp"
+        android:textColor="@android:color/black"
+        android:background="@android:color/white"
+        android:padding="10dp"
+        android:elevation="8dp"
+        android:layout_below="@id/navigation_info"
+        android:layout_alignParentStart="true"
+        android:layout_marginTop="8dp"
+        android:layout_marginStart="16dp" />
 
     <!-- Navigate Button -->
     <Button
@@ -36,34 +52,29 @@
         android:text="Navigate"
         android:layout_alignParentBottom="true"
         android:layout_centerHorizontal="true"
-        android:layout_marginBottom="16dp"/>
+        android:layout_marginBottom="16dp" />
 
     <!-- Control buttons for map rotation -->
     <LinearLayout
-        android:layout_width="match_parent"
+        android:id="@+id/control_buttons_layout"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_alignParentBottom="true"
-        android:orientation="vertical"
-        android:gravity="center">
+        android:layout_above="@id/navigation_button"
+        android:layout_centerHorizontal="true"
+        android:orientation="horizontal"
+        android:layout_marginBottom="16dp">
 
-
-        <!-- Row for Left/Right controls -->
-        <LinearLayout
+        <Button
+            android:id="@+id/button_left"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:orientation="horizontal">
+            android:text="Left" />
 
-            <Button
-                android:id="@+id/button_left"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Left"/>
-
-            <Button
-                android:id="@+id/button_right"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Right"/>
-        </LinearLayout>
+        <Button
+            android:id="@+id/button_right"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Right" />
     </LinearLayout>
+
 </RelativeLayout>

@@ -8,6 +8,8 @@ espressoCore = "3.5.1"
 appcompat = "1.6.1"
 material = "1.10.0"
 googleAndroidLibrariesMapsplatformSecretsGradlePlugin = "2.0.1"
+obdJavaApi = "1.0-RC21"
+obdJavaApiVersion = "v1.0-RC21"
 okhttp = "4.9.3"
 playServicesMaps = "18.1.0"
 constraintlayout = "2.1.4"
@@ -20,6 +22,8 @@ androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "j
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
 androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
 material = { group = "com.google.android.material", name = "material", version.ref = "material" }
+obd-java-api = { module = "com.github.pires:obd-java-api", version.ref = "obdJavaApi" }
+obd-java-api-vv10rc21 = { module = "com.github.pires:obd-java-api", version.ref = "obdJavaApiVersion" }
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 play-services-maps = { group = "com.google.android.gms", name = "play-services-maps", version.ref = "playServicesMaps" }
 androidx-constraintlayout = { group = "androidx.constraintlayout", name = "constraintlayout", version.ref = "constraintlayout" }

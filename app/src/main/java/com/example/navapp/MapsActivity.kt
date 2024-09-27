@@ -1,6 +1,8 @@
+// MapsActivity.kt
 package com.example.navapp
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.hardware.GeomagneticField
 import android.hardware.Sensor
@@ -12,7 +14,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.text.Html
 import android.util.Log
 import android.view.animation.LinearInterpolator
 import android.widget.Button
@@ -20,7 +21,6 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import androidx.core.text.HtmlCompat
 import com.example.navapp.databinding.ActivityMapsBinding
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
@@ -33,12 +33,13 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.IOException
 
-class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListener {
+class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListener, ObdDataListener {
 
     private var currentLatLng: LatLng? = null
     private lateinit var mMap: GoogleMap
     private lateinit var binding: ActivityMapsBinding
     private lateinit var navigationInfoTextView: TextView
+    private lateinit var speedTextView: TextView
     private var route: List<LatLng> = mutableListOf()
     private var steps: List<Step> = mutableListOf()
     private var marker: Marker? = null
@@ -52,6 +53,9 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
     private var rotationVectorSensor: Sensor? = null
     private val orientation = FloatArray(3)
     private val rotationMatrix = FloatArray(9)
+    private var originLatLng: LatLng? = null
+    private var destinationLatLng: LatLng? = null
+
 
     companion object {
         private const val REQUEST_CODE_LOCATION_PERMISSION = 100
@@ -63,6 +67,10 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
     private var currentBearing = 0f  // Initial bearing
 
     private val ALPHA = 0.25f
+
+    // OBD Manager and current speed
+    private lateinit var obdManager: OBDManager
+    private var currentSpeed: Float = 0f
 
     // Low-Pass Filter function to smooth sensor data
     private fun lowPass(input: FloatArray, output: FloatArray?): FloatArray {
@@ -132,6 +140,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         buttonRight.setOnClickListener { adjustBearing(10f) }
 
         // Initialize UI components
+        speedTextView = findViewById(R.id.speed_text_view)
         navigationInfoTextView = findViewById(R.id.navigation_info)
         val mapFragment = supportFragmentManager.findFragmentById(R.id.map) as SupportMapFragment
         mapFragment.getMapAsync(this)
@@ -139,11 +148,24 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         // Navigation button listener
         val navigateButton: Button = findViewById(R.id.navigation_button)
         navigateButton.setOnClickListener {
-            if (route.isNotEmpty()) simulateNavigation()
+            if (route.isNotEmpty()) {
+                simulateNavigation()
+            } else {
+                Toast.makeText(this, "אין מסלול לניווט. בחר נקודת התחלה וסיום.", Toast.LENGTH_SHORT).show()
+            }
         }
+
+        // Initialize OBDManager
+        obdManager = OBDManager(this, this)
+        obdManager.checkAndRequestPermissions()
     }
 
+
     override fun onSensorChanged(event: SensorEvent) {
+        if (!::mMap.isInitialized) {
+            Log.d("MapsActivity", "mMap is not initialized yet in onSensorChanged.")
+            return
+        }
         when (event.sensor.type) {
             Sensor.TYPE_ACCELEROMETER -> {
                 gravity = lowPass(event.values, gravity)
@@ -168,7 +190,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                     System.currentTimeMillis()
                 )
                 val declination = geoField.declination
-                val trueNorthAzimuth = (azimuthInDegrees + declination) % 360
+                val trueNorthAzimuth = (azimuthInDegrees + declination + 360) % 360
                 currentAzimuth = trueNorthAzimuth
                 // Update the camera bearing
                 currentBearing = trueNorthAzimuth
@@ -204,22 +226,17 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                     System.currentTimeMillis()
                 )
                 val declination = geoField.declination
-                val trueNorthAzimuth = (azimuthInDegrees + declination) % 360
+                val trueNorthAzimuth = (azimuthInDegrees + declination + 360) % 360
                 currentAzimuth = trueNorthAzimuth
-                // Check if mMap is initialized before using it
-                if (::mMap.isInitialized) {
-                    // Update the camera bearing
-                    currentBearing = trueNorthAzimuth
-                    val cameraPosition = CameraPosition.Builder()
-                        .target(mMap.cameraPosition.target)
-                        .zoom(mMap.cameraPosition.zoom)
-                        .tilt(currentTilt)
-                        .bearing(currentBearing)
-                        .build()
-                    mMap.animateCamera(CameraUpdateFactory.newCameraPosition(cameraPosition))
-                } else {
-                    Log.d("MapsActivity", "mMap is not initialized yet.")
-                }
+                // Update the camera bearing
+                currentBearing = trueNorthAzimuth
+                val cameraPosition = CameraPosition.Builder()
+                    .target(mMap.cameraPosition.target)
+                    .zoom(mMap.cameraPosition.zoom)
+                    .tilt(currentTilt)
+                    .bearing(currentBearing)
+                    .build()
+                mMap.animateCamera(CameraUpdateFactory.newCameraPosition(cameraPosition))
 
                 // Log the azimuth
                 Log.d("MapsActivity", "Azimuth: $trueNorthAzimuth°")
@@ -234,28 +251,90 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
     override fun onPause() {
         super.onPause()
         sensorManager.unregisterListener(this)
+        obdManager.disconnect()
     }
 
     override fun onResume() {
         super.onResume()
-        sensorManager.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_UI)
-        sensorManager.registerListener(this, magnetometer, SensorManager.SENSOR_DELAY_UI)
-        sensorManager.registerListener(this, rotationVectorSensor, SensorManager.SENSOR_DELAY_UI)
+        // Sensor listeners are registered in onMapReady
+        obdManager.checkAndRequestPermissions()
     }
+
+    // הכרזת startLocation ו-destination כמשתנים ברמת המחלקה
+    private var startLocation: LatLng? = null
+    private var destination: LatLng? = null
 
     override fun onMapReady(googleMap: GoogleMap) {
         mMap = googleMap
-        val startLocation = LatLng(32.794044, 34.989571) // Starting point in Haifa
-        mMap.addMarker(MarkerOptions().position(startLocation).title("Start Point"))
-        mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(startLocation, 10f))
+
+        // הגדרות המפה
         mMap.uiSettings.isZoomControlsEnabled = true
         mMap.isTrafficEnabled = true
         mMap.uiSettings.isTiltGesturesEnabled = true
         mMap.uiSettings.isRotateGesturesEnabled = true
 
-        val destination = LatLng(32.0853, 34.7818) // Destination example in Tel Aviv
-        getDirections(startLocation, destination)
+        // רישום מאזינים לחיישנים
+        sensorManager.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_UI)
+        sensorManager.registerListener(this, magnetometer, SensorManager.SENSOR_DELAY_UI)
+        sensorManager.registerListener(this, rotationVectorSensor, SensorManager.SENSOR_DELAY_UI)
+
+        // הוספת מאזין ללחיצות על המפה
+        mMap.setOnMapClickListener { latLng ->
+            handleMapClick(latLng)
+        }
+
+        // אופציונלי: מאזין ללחיצה ארוכה לאיפוס הבחירות
+        mMap.setOnMapLongClickListener {
+            clearSelections()
+        }
+
+        // הגדרת מיקום מצלמה התחלתי (לדוגמה, חיפה)
+        val initialPosition = LatLng(32.794044, 34.989571) // חיפה
+        val cameraPosition = CameraPosition.Builder()
+            .target(initialPosition)
+            .zoom(10f)
+            .tilt(0f)
+            .bearing(0f)
+            .build()
+
+        mMap.moveCamera(CameraUpdateFactory.newCameraPosition(cameraPosition))
     }
+
+    private fun handleMapClick(latLng: LatLng) {
+        if (startLocation == null) {
+            // הגדרת startLocation
+            startLocation = latLng
+            mMap.addMarker(MarkerOptions().position(latLng).title("Start Point"))
+            Toast.makeText(this, "נקודת התחלה נבחרה. לחץ כדי לבחור נקודת סיום.", Toast.LENGTH_SHORT).show()
+        } else if (destination == null) {
+            // הגדרת destination
+            destination = latLng
+            mMap.addMarker(MarkerOptions().position(latLng).title("Destination"))
+            Toast.makeText(this, "נקודת סיום נבחרה.", Toast.LENGTH_SHORT).show()
+
+            // ברגע ששתי הנקודות נבחרו, קבלת הוראות
+            startLocation?.let { start ->
+                destination?.let { dest ->
+                    getDirections(start, dest)
+                }
+            }
+        } else {
+            // שתי הנקודות כבר נבחרו; מבקשים מהמשתמש לאפס את הבחירות
+            Toast.makeText(this, "כבר בחרת נקודת התחלה וסיום. לחץ לחיצה ארוכה כדי לאפס.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun clearSelections() {
+        startLocation = null
+        destination = null
+        mMap.clear()
+        route = mutableListOf()
+        steps = mutableListOf()
+        marker = null
+        Toast.makeText(this, "הבחירות אופסו. לחץ כדי לבחור נקודת התחלה.", Toast.LENGTH_SHORT).show()
+    }
+
+
 
     private fun getDirections(origin: LatLng, destination: LatLng) {
         val apiKey = BuildConfig.MAPS_API_KEY
@@ -367,17 +446,18 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         return results[0]  // Return distance in meters
     }
 
-
     private fun simulateNavigation() {
         var routeIndex = 0
         var currentLatLng: LatLng? = route.firstOrNull()
-
+        if (route.isEmpty()) {
+            Toast.makeText(this, "אין מסלול לניווט. בחר נקודת התחלה וסיום.", Toast.LENGTH_SHORT).show()
+            return
+        }
         currentLatLng?.let {
             marker = mMap.addMarker(MarkerOptions().position(it).title("Simulated Location"))
         }
 
-        val simulationSpeed = 20f
-        // val simulationDirection = currentAzimuth
+        val simulationSpeed = currentSpeed.takeIf { it > 0 } ?: 0f
         Log.d("Simulation", "CurrentAzimuth in simulateNavigation: $currentAzimuth")
 
         currentTilt = 60f
@@ -438,7 +518,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
 
         val requestBody = json.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
         val request = Request.Builder()
-            .url("http://10.0.0.16:5000/update")
+            .url("http://10.0.0.18:5000/update")
             .post(requestBody)
             .build()
 
@@ -485,6 +565,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                                     .target(currentLocation)
                                     .zoom(mMap.cameraPosition.zoom)
                                     .tilt(currentTilt)
+                                    .bearing(currentBearing)
                                     .build()
 
                                 mMap.animateCamera(CameraUpdateFactory.newCameraPosition(cameraPosition))
@@ -540,7 +621,6 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         })
     }
 
-
     private fun animateMarker(marker: Marker, toPosition: LatLng) {
         val startPosition = marker.position
         val handler = Handler(Looper.getMainLooper())
@@ -562,6 +642,26 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                 }
             }
         })
+    }
+
+    // ObdDataListener implementation
+    @SuppressLint("SetTextI18n")
+    override fun onSpeedUpdated(speed: Float) {
+        currentSpeed = speed
+        runOnUiThread {
+            speedTextView.text = "Speed: $speed km/h"        }
+    }
+
+    override fun onObdError(errorMessage: String) {
+        runOnUiThread {
+            Toast.makeText(this, "OBD Error: $errorMessage", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    // Pass onRequestPermissionsResult to OBDManager
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        obdManager.onRequestPermissionsResult(requestCode, permissions, grantResults)
     }
 
 }
