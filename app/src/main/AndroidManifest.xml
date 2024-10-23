@@ -47,6 +47,7 @@
 
         <activity
             android:name=".MapsActivity"
+            android:theme="@style/Theme.NavApp.NoActionBar"
             android:exported="true"
             android:label="@string/title_activity_maps">
             <intent-filter>
