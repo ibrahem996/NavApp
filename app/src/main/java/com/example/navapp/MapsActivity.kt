@@ -1,7 +1,9 @@
 // MapsActivity.kt
 package com.example.navapp
 
+import android.Manifest
 import android.annotation.SuppressLint
+import android.content.pm.PackageManager
 import android.hardware.GeomagneticField
 import android.hardware.Sensor
 import android.hardware.SensorEvent
@@ -18,6 +20,7 @@ import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.example.navapp.databinding.ActivityMapsBinding
 import com.google.android.gms.maps.CameraUpdateFactory
@@ -28,6 +31,13 @@ import com.google.android.gms.maps.model.*
 import okhttp3.*
 import org.json.JSONObject
 import java.io.IOException
+import android.location.LocationListener
+import android.location.LocationManager
+import android.content.Context
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
+
 
 class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListener, ObdDataListener {
 
@@ -36,19 +46,20 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
     private lateinit var calculationManager: CalculationManager
     private lateinit var binding: ActivityMapsBinding
     private lateinit var navigationInfoTextView: TextView
+    private lateinit var distanceTextView: TextView
     private lateinit var speedTextView: TextView
     private var route: List<LatLng> = mutableListOf()
     private var steps: List<Step> = mutableListOf()
+    private var currentStepIndex = 0
+    private var currentStep: Step? = null
     private var marker: Marker? = null
     private val handler = Handler(Looper.getMainLooper())
 
     private lateinit var sensorManager: SensorManager
     private var accelerometer: Sensor? = null
     private var magnetometer: Sensor? = null
-    private var gravity: FloatArray? = null
-    private var geomagnetic: FloatArray? = null
     private var rotationVectorSensor: Sensor? = null
-
+    private val LOCATION_PERMISSION_REQUEST_CODE = 1
 
     companion object {
         private const val REQUEST_CODE_LOCATION_PERMISSION = 100
@@ -56,22 +67,55 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
     }
 
     private var currentAzimuth: Float = 0f
+    private var simulatedAzimuth: Float = 0f
+    private var initialPhoneAzimuth: Float = 0f
     private var currentTilt = 0f  // Initial tilt
     private var currentBearing = 0f  // Initial bearing
+    private var angle = 0f  // Initial angle
 
     private val ALPHA = 0.25f
 
     // OBD Manager and current speed
     private lateinit var obdManager: OBDManager
     private var currentSpeed: Float = 0f
+    private lateinit var locationManager: LocationManager
+    private var gpsSpeed: Float = 0f
+    private var lastLocation: Location? = null
+    private var lastLocationTime: Long = 0L
+    private lateinit var azimuthKalmanFilter: KalmanFilter1D
+    var lastFindClosestPointTime = System.currentTimeMillis()
 
-    // Low-Pass Filter function to smooth sensor data
-    private fun lowPass(input: FloatArray, output: FloatArray?): FloatArray {
-        if (output == null) return input.clone()
-        for (i in input.indices) {
-            output[i] = output[i] + ALPHA * (input[i] - output[i])
+
+    private val locationListener = object : LocationListener {
+        override fun onLocationChanged(location: Location) {
+            val currentTime = System.currentTimeMillis()
+
+            // Copy lastLocation to a local variable
+            val lastLoc = lastLocation
+            if (lastLoc != null) {
+                val timeDelta = (currentTime - lastLocationTime) / 1000.0 // Time in seconds
+                val distance = location.distanceTo(lastLoc) // Distance in meters
+
+                if (timeDelta > 0) { // Avoid division by zero
+                    val speed = (distance / timeDelta) * 3.6 // Speed in km/h
+                    gpsSpeed = speed.toFloat()
+
+                    // Log the calculated GPS speed
+                    Log.d("MapsActivity", "Calculated GPS Speed: $gpsSpeed km/h")
+                }
+            } else {
+                // For the first location update, use location.speed if available
+                gpsSpeed = location.speed * 3.6f
+                Log.d("MapsActivity", "Initial GPS Speed from Location: $gpsSpeed km/h")
+            }
+
+            lastLocation = location
+            lastLocationTime = currentTime
         }
-        return output
+
+        override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+        override fun onProviderEnabled(provider: String) {}
+        override fun onProviderDisabled(provider: String) {}
     }
 
 
@@ -105,6 +149,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         // Initialize UI components
         speedTextView = findViewById(R.id.speed_text_view)
         navigationInfoTextView = findViewById(R.id.navigation_info)
+        distanceTextView = findViewById(R.id.distance_text_view)
 
         // Initialize map fragment
         val mapFragment = supportFragmentManager.findFragmentById(R.id.map) as? SupportMapFragment
@@ -125,6 +170,33 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         // Initialize OBDManager
         obdManager = OBDManager(this, this)
         obdManager.checkAndRequestPermissions()
+
+        // Initialize LocationManager
+        locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+
+        // Check permissions and request location updates
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+            == PackageManager.PERMISSION_GRANTED) {
+            locationManager.requestLocationUpdates(
+                LocationManager.GPS_PROVIDER,
+                1000L, // Minimum time interval between updates (milliseconds)
+                0f,    // Minimum distance between updates (meters)
+                locationListener
+            )
+        } else {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
+                LOCATION_PERMISSION_REQUEST_CODE
+            )
+        }
+        // Initialize the Kalman Filter with initial parameters
+        azimuthKalmanFilter = KalmanFilter1D(
+            q = 0.7f,   // Process noise covariance
+            r = 0.8f,   // Measurement noise covariance
+            initialEstimate = 0f,  // Initial state estimate
+            initialErrorCovariance = 1f  // Initial estimation error covariance
+        )
     }
 
 
@@ -146,6 +218,10 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                 var azimuthInDegrees = Math.toDegrees(azimuthInRadians.toDouble()).toFloat()
                 azimuthInDegrees = (azimuthInDegrees + 360) % 360  // Ensure value is between 0° and 360°
 
+                // Apply Kalman Filter
+                val filteredAzimuth = azimuthKalmanFilter.update(azimuthInDegrees)
+                Log.d("MapsActivity2", "azimuthInDegrees Azimuth: $azimuthInDegrees")
+                Log.d("MapsActivity2", "filteredAzimuth Azimuth: $filteredAzimuth")
                 // Account for magnetic declination
                 val latitude = currentLatLng?.latitude?.toFloat() ?: 0f
                 val longitude = currentLatLng?.longitude?.toFloat() ?: 0f
@@ -156,10 +232,11 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                     System.currentTimeMillis()
                 )
                 val declination = geoField.declination
-                var trueNorthAzimuth = (azimuthInDegrees + declination + 360) % 360
+                var trueNorthAzimuth = (filteredAzimuth + declination + 360) % 360
 
                 // Handle angle wrap-around
                 var deltaAzimuth = trueNorthAzimuth - currentAzimuth
+                Log.d("MapsActivity2", "deltaAzimuth Azimuth: $deltaAzimuth")
                 if (deltaAzimuth > 180) deltaAzimuth -= 360
                 else if (deltaAzimuth < -180) deltaAzimuth += 360
 
@@ -168,9 +245,9 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
 
                 // Update the current azimuth
                 currentAzimuth = trueNorthAzimuth
-
+                //simulatedAzimuth = currentAzimuth + deltaAzimuth
                 // Update the camera bearing
-                currentBearing = trueNorthAzimuth
+                currentBearing = angle
                 val cameraPosition = CameraPosition.Builder()
                     .target(mMap.cameraPosition.target)
                     .zoom(mMap.cameraPosition.zoom)
@@ -179,7 +256,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                     .build()
 
                 // Only update camera if the change is significant (e.g., more than 1°)
-                if (kotlin.math.abs(deltaAzimuth) > 1) {
+                if (kotlin.math.abs(deltaAzimuth) > 3) {
                     mMap.animateCamera(CameraUpdateFactory.newCameraPosition(cameraPosition))
                 }
 
@@ -202,28 +279,65 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         sensorManager.unregisterListener(this)
         obdManager.disconnect()
         handler.removeCallbacksAndMessages(null)  // Prevent memory leaks by removing all callbacks and messages
-        Log.d("MapsActivity", "onPause: Unregistered sensor listeners and removed handler callbacks.")
+        locationManager.removeUpdates(locationListener) // Stop location updates
+        Log.d("MapsActivity", "onPause: Unregistered sensor listeners, removed handler callbacks, and stopped location updates.")
     }
 
 
     override fun onResume() {
         super.onResume()
-        // Sensors are already registered in onCreate
+        // Re-register sensor listeners
+        accelerometer?.also {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+        }
+        magnetometer?.also {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+        }
+        rotationVectorSensor?.also {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+        }
+
+        // Request location updates if permission is granted
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+            == PackageManager.PERMISSION_GRANTED) {
+            locationManager.requestLocationUpdates(
+                LocationManager.GPS_PROVIDER,
+                1000L,
+                0f,
+                locationListener
+            )
+        }
+
         obdManager.checkAndRequestPermissions()
         Log.d("MapsActivity", "onResume: Checked and requested OBD permissions.")
     }
+
 
     private var startLocation: LatLng? = null
     private var destination: LatLng? = null
 
     override fun onMapReady(googleMap: GoogleMap) {
         mMap = googleMap
-
         // Map settings
         mMap.uiSettings.isZoomControlsEnabled = true
         mMap.isTrafficEnabled = true
         mMap.uiSettings.isTiltGesturesEnabled = true
         mMap.uiSettings.isRotateGesturesEnabled = true
+        // Check if location permission is granted
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+            == PackageManager.PERMISSION_GRANTED) {
+            // Enable the My Location layer on the map
+            mMap.isMyLocationEnabled = true
+        } else {
+            // Request permission if not already granted
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
+                LOCATION_PERMISSION_REQUEST_CODE
+            )
+        }
+        // Customize the UI settings of the map
+        mMap.uiSettings.isMyLocationButtonEnabled = true
 
         // Adding map click listeners
         mMap.setOnMapClickListener { latLng ->
@@ -245,6 +359,34 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
             .build()
 
         mMap.moveCamera(CameraUpdateFactory.newCameraPosition(cameraPosition))
+    }
+
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        // Handle location permission result
+        if (requestCode == LOCATION_PERMISSION_REQUEST_CODE) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                    == PackageManager.PERMISSION_GRANTED) {
+                    mMap.isMyLocationEnabled = true
+                    // Request location updates after permission is granted
+                    locationManager.requestLocationUpdates(
+                        LocationManager.GPS_PROVIDER,
+                        1000L,
+                        0f,
+                        locationListener
+                    )
+                }
+            } else {
+                Toast.makeText(this, "Location permission is required.", Toast.LENGTH_LONG).show()
+            }
+        }
+        // Pass onRequestPermissionsResult to OBDManager
+        obdManager.onRequestPermissionsResult(requestCode, permissions, grantResults)
     }
 
 
@@ -302,6 +444,9 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                         val jsonObject = JSONObject(jsonResponse)
                         route = parseDirections(jsonObject)
                         steps = parseSteps(jsonObject)
+                        // Log the route and steps for debugging purposes
+                        Log.d("MapsActivity", "Route: $route")
+                        Log.d("MapsActivity", "steps: $steps")
                         runOnUiThread {
                             drawPolyline(route)
                         }
@@ -328,19 +473,82 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
     }
 
     private fun parseSteps(jsonObject: JSONObject): List<Step> {
-        val steps = mutableListOf<Step>()
+        val stepsList = mutableListOf<Step>()
         val routes = jsonObject.getJSONArray("routes")
         if (routes.length() > 0) {
             val legs = routes.getJSONObject(0).getJSONArray("legs")
-            for (i in 0 until legs.getJSONObject(0).getJSONArray("steps").length()) {
-                val step = legs.getJSONObject(0).getJSONArray("steps").getJSONObject(i)
-                val distance = step.getJSONObject("distance").getString("text")
-                val instruction = step.getString("html_instructions")
-                steps.add(Step(instruction, distance))
+            val stepsArray = legs.getJSONObject(0).getJSONArray("steps")
+            for (i in 0 until stepsArray.length()) {
+                val stepObject = stepsArray.getJSONObject(i)
+                val distance = stepObject.getJSONObject("distance").getString("text")
+                val instruction = stepObject.getString("html_instructions")
+                val startLocation = stepObject.getJSONObject("start_location")
+                val endLocation = stepObject.getJSONObject("end_location")
+                val startLatLng = LatLng(
+                    startLocation.getDouble("lat"),
+                    startLocation.getDouble("lng")
+                )
+                val endLatLng = LatLng(
+                    endLocation.getDouble("lat"),
+                    endLocation.getDouble("lng")
+                )
+                stepsList.add(Step(instruction, distance, startLatLng, endLatLng))
             }
         }
-        return steps
+        return stepsList
     }
+
+
+    private fun updateCurrentStep(currentLatLng: LatLng) {
+        if (currentStepIndex >= steps.size) return  // No more steps
+
+        currentStep?.let { step ->
+            val stepEndLocation = step.endLocation
+
+            // Calculate the distance to the end point of the current step
+            val distanceToEnd = calculationManager.calculateDistance(currentLatLng, stepEndLocation)
+
+            // Update distance in UI
+            updateDistanceToStep(distanceToEnd)
+
+            // If the distance is less than a certain threshold, proceed to the next step
+            val THRESHOLD_DISTANCE = 50.0  // Threshold in meters
+            if (distanceToEnd < THRESHOLD_DISTANCE) {
+                currentStepIndex++
+                if (currentStepIndex < steps.size) {
+                    currentStep = steps[currentStepIndex]
+                    updateNavigationInfo()
+                } else {
+                    runOnUiThread {
+                        navigationInfoTextView.text = "הגעת ליעד"
+                    }
+                }
+            }
+        }
+    }
+
+
+    private fun updateNavigationInfo() {
+        runOnUiThread {
+            currentStep?.let { step ->
+                navigationInfoTextView.text = android.text.Html.fromHtml(step.description)
+            }
+        }
+    }
+
+
+    @SuppressLint("DefaultLocale", "SetTextI18n")
+    private fun updateDistanceToStep(distance: Double) {
+        runOnUiThread {
+            val formattedDistance = if (distance >= 1000) {
+                String.format("%.1f km", distance / 1000)
+            } else {
+                String.format("%.0f m", distance)
+            }
+            distanceTextView.text = "מרחק ליעד הבא: $formattedDistance"
+        }
+    }
+
 
     private fun drawPolyline(route: List<LatLng>) {
         val polylineOptions = PolylineOptions().addAll(route).width(10f)
@@ -381,17 +589,19 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         return poly
     }
 
-    // Function to calculate the distance between two LatLng points
-    private fun calculateDistance(point1: LatLng, point2: LatLng): Float {
-        val results = FloatArray(1)
-        Location.distanceBetween(
-            point1.latitude,
-            point1.longitude,
-            point2.latitude,
-            point2.longitude,
-            results
-        )
-        return results[0]  // Return distance in meters
+    private fun calculateBearing(start: LatLng, end: LatLng): Float {
+        val startLat = Math.toRadians(start.latitude)
+        val startLng = Math.toRadians(start.longitude)
+        val endLat = Math.toRadians(end.latitude)
+        val endLng = Math.toRadians(end.longitude)
+
+        val deltaLng = endLng - startLng
+        val x = sin(deltaLng) * cos(endLat)
+        val y = cos(startLat) * sin(endLat) - sin(startLat) * cos(endLat) * cos(deltaLng)
+
+        var bearing = Math.toDegrees(atan2(x, y)).toFloat()
+        bearing = (bearing + 360) % 360
+        return bearing
     }
 
     private fun startNavigation() {
@@ -399,21 +609,34 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
             Toast.makeText(this, "No route available. Please select start and destination points.", Toast.LENGTH_SHORT).show()
             return
         }
+        simulatedAzimuth = calculateBearing(route[0], route[2])
+        Log.d("Simulation2", "Initial Route Bearing: $simulatedAzimuth")
+        initialPhoneAzimuth = currentAzimuth
+        Log.d("Simulation2", "Initial initialPhoneAzimuth: $initialPhoneAzimuth")
+
         // Initialize simulation variables
         var routeIndex = 0
         var currentLatLng: LatLng? = route.firstOrNull()
+        currentStepIndex = 0
+        if (steps.isNotEmpty()) {
+            currentStep = steps[currentStepIndex]
+            updateNavigationInfo()
 
+            // Update the initial distance
+            val initialDistance = calculationManager.calculateDistance(currentLatLng!!, currentStep!!.endLocation)
+            updateDistanceToStep(initialDistance)
+        } else {
+            Toast.makeText(this, "No navigation steps available.", Toast.LENGTH_SHORT).show()
+            Log.e("MapsActivity", "Steps are empty in startNavigation.")
+            return
+        }
         // Set initial marker position
-        currentLatLng?.let {
+        currentLatLng.let {
             marker = mMap.addMarker(MarkerOptions().position(it).title("Simulated Location"))
         } ?: run {
             Toast.makeText(this, "Invalid start location.", Toast.LENGTH_SHORT).show()
             return
         }
-        // Convert speed from km/h to m/s (assuming currentSpeed is in km/h)
-        val simulationSpeed = (currentSpeed.takeIf { it > 0 } ?: 70f) / 3.6f  // Default speed 10 km/h if speed is 0
-        Log.d("Simulation", "CurrentAzimuth in start Navigation: $currentAzimuth")
-        Log.d("Simulation", "Simulation speed: $simulationSpeed m/s")
 
         // Apply initial camera tilt and bearing
         currentTilt = 60f
@@ -432,76 +655,128 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         // Create a runnable for continuous location update
         val navigationRunnable = object : Runnable {
             override fun run() {
-                if (routeIndex < route.size - 1) {  // Ensure there's a next point
-                    val currentPoint = route[routeIndex]
-                    val nextPoint = route[routeIndex + 1]
-                    // Log.d("Simulation", "Current tilt: $currentTilt")
+                val currentPoint = route[routeIndex]
+                // val nextPoint = route.getOrNull(routeIndex + 1)
 
-                    // Use currentAzimuth from sensors
-                    val angle = currentAzimuth.toDouble()
+                // Recalculate effective speed inside the runnable
+                // val effectiveSpeed = if (currentSpeed > 0f) currentSpeed else gpsSpeed
+                //val effectiveSpeed = if (gpsSpeed < 1.5) 0f else gpsSpeed
+                val effectiveSpeed =  22f
+                val simulationSpeed = (effectiveSpeed.takeIf { it > 0 } ?: 0f) / 3.6f  // Convert km/h to m/s
 
-                    // Calculate time elapsed since last update
-                    val currentTimestamp = System.currentTimeMillis()
-                    val timeElapsed = calculationManager.timeElapsedSinceLastUpdate(currentTimestamp)
+                Log.d("Simulation2", "CurrentAzimuth in navigationRunnable: $currentAzimuth")
+                Log.d("Simulation", "Simulation speed: $simulationSpeed m/s")
 
-                    // Update last timestamp
-                    calculationManager.updateTimestamp(currentTimestamp)
-                    Log.d("Simulation", "CurrentAzimuth in startNavigation: $currentAzimuth")
-                    Log.d("Simulation", "Simulation speed: $simulationSpeed m/s")
-                    onSpeedUpdated(simulationSpeed * 3.6f)
-
-                    // Calculate new position using CalculationManager
-                    val newPositionPair = calculationManager.calculateNewPosition(
-                        latPrev = currentLatLng?.latitude ?: currentPoint.latitude,
-                        lonPrev = currentLatLng?.longitude ?: currentPoint.longitude,
-                        speed = simulationSpeed.toDouble(),  // Speed in m/s
-                        angle = angle,   // Using device's azimuth
-                        timeElapsed = timeElapsed
-                    )
-
-                    // Update current position
-                    currentLatLng = LatLng(newPositionPair.first, newPositionPair.second)
-
-                    // Animate marker movement for smooth transition
-                    currentLatLng?.let { newLatLng ->
-                        marker?.let { animateMarker(it, newLatLng) }
-                    }
-
-                    // Move camera to follow the marker smoothly
-                    currentLatLng?.let { latLng ->
-                        val newCameraPosition = CameraPosition.Builder()
-                            .target(latLng)
-                            .zoom(mMap.cameraPosition.zoom)
-                            .tilt(currentTilt)
-                            .bearing(currentBearing)
-                            .build()
-                        mMap.animateCamera(CameraUpdateFactory.newCameraPosition(newCameraPosition), 500, null)  // Animate over 500ms
-                    } ?: run {
-                        Log.e("Simulation", "currentLatLng is null. Cannot update camera.")
-                    }
-
-                    // Check if the marker is close to the next point
-                    val distanceToNextPoint = calculateDistance(currentLatLng!!, nextPoint)
-                    if (distanceToNextPoint < 10) {  // Threshold in meters
-                        routeIndex++  // Move to the next segment
-                    }
-
-                    // Schedule next update
-                    handler.postDelayed(this, 100)  // Update every 100 milliseconds for real-time updates
+                // Use currentAzimuth from sensors
+                val angleDifference = calculationManager.calculateAngleDifference(simulatedAzimuth, currentAzimuth)
+                if (angleDifference in -45f..45f) {
+                    angle = (simulatedAzimuth + (currentAzimuth - initialPhoneAzimuth) + 360) % 360
+                    Log.d("Simulation2", "Initial angle updated to: $angle")
                 } else {
-                    // Final segment
-                    Log.d("Simulation", "Final point reached.")
-
-                    // Optionally, remove the marker or perform other cleanup
-                    marker?.remove()
-                    Toast.makeText(this@MapsActivity, "Navigation simulation completed.", Toast.LENGTH_SHORT).show()
-
-                    // Stop the simulation
-                    handler.removeCallbacks(this)
+                    angle = currentAzimuth
+                    Log.d("Simulation3", "Initial azimuth difference ($angleDifference°) exceeds ±45°. Update skipped.")
+                    //Toast.makeText(this, "Initial azimuth difference exceeds ±45°. Navigation may not align correctly.", Toast.LENGTH_SHORT).show()
                 }
+                //val angle = simulatedAzimuth +(currentAzimuth.toDouble() - initialPhoneAzimuth.toDouble())
+                //angle = (simulatedAzimuth + (currentAzimuth - initialPhoneAzimuth) + 360) % 360
+
+                Log.d("Simulation2", "simulatedAzimuth in navigationRunnable: $simulatedAzimuth")
+                Log.d("Simulation2", "initialPhoneAzimuth in navigationRunnable: $initialPhoneAzimuth")
+                Log.d("Simulation2", "angle in navigationRunnable: $angle")
+                // Calculate time elapsed since last update
+                val currentTimestamp = System.currentTimeMillis()
+                val timeElapsed = calculationManager.timeElapsedSinceLastUpdate(currentTimestamp)
+
+                // Update last timestamp
+                calculationManager.updateTimestamp(currentTimestamp)
+
+                // Update speed display
+                onSpeedUpdated(simulationSpeed * 3.6f)
+
+                // Calculate new position using CalculationManager
+                val newPositionPair = calculationManager.calculateNewPosition(
+                    latPrev = currentLatLng?.latitude ?: currentPoint.latitude,
+                    lonPrev = currentLatLng?.longitude ?: currentPoint.longitude,
+                    speed = simulationSpeed.toDouble(),  // Speed in m/s
+                    angle = angle,   // Using device's azimuth
+                    timeElapsed = timeElapsed
+                )
+
+                // Update current position
+                currentLatLng = LatLng(newPositionPair.first, newPositionPair.second)
+                // Update current step
+                updateCurrentStep(currentLatLng!!)
+
+                val currentTime = System.currentTimeMillis()
+                val diffFindClosestPointTime = currentTime - lastFindClosestPointTime
+                var closestIndex: Int? = null
+                var simulatedAzimuth2 = simulatedAzimuth
+
+                if (diffFindClosestPointTime >= 1500) {  // Check if 1.5 seconds have passed
+                    lastFindClosestPointTime = currentTime
+
+                    // Find the index of the closest point within threshold, excluding current index
+                    closestIndex = calculationManager.findClosestPointIndex(currentLatLng!!, route, routeIndex, simulationSpeed)
+
+                    // Update routeIndex only if closestIndex is not null
+                    if (closestIndex != null) {
+                        // Calculate the angular difference between the new simulated azimuth and the current azimuth
+                        simulatedAzimuth2 = calculateBearing(route[closestIndex], route.getOrNull(closestIndex + 2) ?: route[closestIndex])
+                        val angleDifference = calculationManager.calculateAngleDifference(simulatedAzimuth2, currentAzimuth)
+                        routeIndex = closestIndex
+
+                        // Proceed with the update only if the angular difference is within ±45 degrees
+                        if (angleDifference in -45f..45f) {
+                            currentLatLng = route[closestIndex]
+
+                            // Update initialPhoneAzimuth and simulatedAzimuth only if within threshold
+                            initialPhoneAzimuth = currentAzimuth
+                            simulatedAzimuth = simulatedAzimuth2
+                        } else {
+                            Log.d("Simulation3", "Azimuth difference ($angleDifference°) exceeds ±45°. Update skipped.")
+                        }
+                    } else {
+                        Log.d("Simulation3", "No closest index found within threshold.")
+                    }
+
+                    // Logging for debugging
+                    Log.d("Simulation3", "simulatedAzimuth in navigationRunnable: $simulatedAzimuth")
+                    Log.d("Simulation3", "simulatedAzimuth2 in navigationRunnable: $simulatedAzimuth2")
+                    Log.d("Simulation3", "initialPhoneAzimuth in navigationRunnable: $initialPhoneAzimuth")
+                    Log.d("Simulation3", "currentAzimuth in navigationRunnable: $currentAzimuth")
+                    Log.d("Simulation3", "angle in navigationRunnable: $angle")
+                    // Uncomment the following lines for more detailed logging if needed
+                    // Log.d("Simulation3", "currentTime in navigationRunnable: $currentTime")
+                    // Log.d("Simulation3", "lastFindClosestPointTime in navigationRunnable: $lastFindClosestPointTime")
+                    // Log.d("Simulation3", "diffFindClosestPointTime in navigationRunnable: $diffFindClosestPointTime")
+                }
+
+
+                // Update the next point based on the new routeIndex
+                val nextPoint = route.getOrNull(routeIndex + 1)
+
+                // Animate marker movement for smooth transition
+                currentLatLng?.let { newLatLng ->
+                    marker?.let { animateMarker(it, newLatLng) }
+                }
+
+                // Move camera to follow the marker smoothly
+                currentLatLng?.let { latLng ->
+                    val newCameraPosition = CameraPosition.Builder()
+                        .target(latLng)
+                        .zoom(mMap.cameraPosition.zoom)
+                        .tilt(currentTilt)
+                        .bearing(angle)
+                        .build()
+                    mMap.animateCamera(CameraUpdateFactory.newCameraPosition(newCameraPosition), 500, null)  // Animate over 500ms
+                } ?: run {
+                    Log.e("Simulation", "currentLatLng is null. Cannot update camera.")
+                }
+
+                // Schedule next update
+                handler.postDelayed(this, 100)  // Update every 100 milliseconds for real-time updates
             }
         }
-
         // Start navigation simulation
         handler.post(navigationRunnable)
     }
@@ -512,7 +787,6 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         val duration = 500L  // Duration in milliseconds (e.g., 0.5 seconds)
         val interpolator = LinearInterpolator()
         val startTime = SystemClock.uptimeMillis()
-
         handler.post(object : Runnable {
             override fun run() {
                 val elapsed = SystemClock.uptimeMillis() - startTime
@@ -532,12 +806,16 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
 
 
     // ObdDataListener implementation
-    @SuppressLint("SetTextI18n")
+    @SuppressLint("SetTextI18n", "DefaultLocale")
     override fun onSpeedUpdated(speed: Float) {
         currentSpeed = speed
+        // Format the speed to one decimal place
+        val formattedSpeed = String.format("%.1f", speed)
         runOnUiThread {
-            speedTextView.text = "$speed\nkm/h"        }
+            speedTextView.text = "$formattedSpeed\nkm/h"
+        }
     }
+
 
     override fun onObdError(errorMessage: String) {
         runOnUiThread {
@@ -545,12 +823,12 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         }
     }
 
-    // Pass onRequestPermissionsResult to OBDManager
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        obdManager.onRequestPermissionsResult(requestCode, permissions, grantResults)
-    }
-
 }
 
-data class Step(val description: String, val distance: String)
+data class Step(
+    val description: String,
+    val distance: String,
+    val startLocation: LatLng,
+    val endLocation: LatLng
+)
+
