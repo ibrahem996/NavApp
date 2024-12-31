@@ -37,6 +37,9 @@ import android.content.Context
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
+import java.util.concurrent.atomic.AtomicReference
+import android.animation.ValueAnimator
+
 
 
 class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListener, ObdDataListener {
@@ -66,7 +69,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         private val client = OkHttpClient()
     }
 
-    private var currentAzimuth: Float = 0f
+    private val currentAzimuth = AtomicReference(0f)
     private var simulatedAzimuth: Float = 0f
     private var initialPhoneAzimuth: Float = 0f
     private var currentTilt = 0f  // Initial tilt
@@ -77,13 +80,15 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
 
     // OBD Manager and current speed
     private lateinit var obdManager: OBDManager
-    private var currentSpeed: Float = 0f
+    private val currentSpeed = AtomicReference(0f)
     private lateinit var locationManager: LocationManager
     private var gpsSpeed: Float = 0f
     private var lastLocation: Location? = null
     private var lastLocationTime: Long = 0L
     private lateinit var azimuthKalmanFilter: KalmanFilter1D
     var lastFindClosestPointTime = System.currentTimeMillis()
+
+    private var currentMarkerAnimator: ValueAnimator? = null
 
 
     private val locationListener = object : LocationListener {
@@ -192,8 +197,8 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         }
         // Initialize the Kalman Filter with initial parameters
         azimuthKalmanFilter = KalmanFilter1D(
-            q = 0.7f,   // Process noise covariance
-            r = 0.8f,   // Measurement noise covariance
+            q = 1.0f,   // Process noise covariance
+            r = 0.6f,   // Measurement noise covariance
             initialEstimate = 0f,  // Initial state estimate
             initialErrorCovariance = 1f  // Initial estimation error covariance
         )
@@ -220,8 +225,8 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
 
                 // Apply Kalman Filter
                 val filteredAzimuth = azimuthKalmanFilter.update(azimuthInDegrees)
-                Log.d("MapsActivity2", "azimuthInDegrees Azimuth: $azimuthInDegrees")
-                Log.d("MapsActivity2", "filteredAzimuth Azimuth: $filteredAzimuth")
+                Log.d("MapsActivity4", "azimuthInDegrees Azimuth: $azimuthInDegrees")
+                Log.d("MapsActivity4", "filteredAzimuth Azimuth: $filteredAzimuth")
                 // Account for magnetic declination
                 val latitude = currentLatLng?.latitude?.toFloat() ?: 0f
                 val longitude = currentLatLng?.longitude?.toFloat() ?: 0f
@@ -233,18 +238,20 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                 )
                 val declination = geoField.declination
                 var trueNorthAzimuth = (filteredAzimuth + declination + 360) % 360
+                Log.d("MapsActivity4", "trueNorthAzimuth Azimuth: $trueNorthAzimuth")
 
                 // Handle angle wrap-around
-                var deltaAzimuth = trueNorthAzimuth - currentAzimuth
+                var deltaAzimuth = trueNorthAzimuth - currentAzimuth.get()
                 Log.d("MapsActivity2", "deltaAzimuth Azimuth: $deltaAzimuth")
                 if (deltaAzimuth > 180) deltaAzimuth -= 360
                 else if (deltaAzimuth < -180) deltaAzimuth += 360
 
                 // Apply low-pass filter using class-level ALPHA
-                trueNorthAzimuth = (currentAzimuth + ALPHA * deltaAzimuth + 360) % 360
+                //trueNorthAzimuth = (currentAzimuth + ALPHA * deltaAzimuth + 360) % 360
+                //Log.d("MapsActivity4", "trueNorthAzimuth2 Azimuth: $trueNorthAzimuth")
 
                 // Update the current azimuth
-                currentAzimuth = trueNorthAzimuth
+                currentAzimuth.set(trueNorthAzimuth)
                 //simulatedAzimuth = currentAzimuth + deltaAzimuth
                 // Update the camera bearing
                 currentBearing = angle
@@ -609,9 +616,15 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
             Toast.makeText(this, "No route available. Please select start and destination points.", Toast.LENGTH_SHORT).show()
             return
         }
-        simulatedAzimuth = calculateBearing(route[0], route[2])
-        Log.d("Simulation2", "Initial Route Bearing: $simulatedAzimuth")
-        initialPhoneAzimuth = currentAzimuth
+        // Initialize simulation variables
+        if (route.size > 2) {
+            simulatedAzimuth = calculateBearing(route[0], route[2])
+            Log.d("Simulation2", "Initial Route Bearing: $simulatedAzimuth")
+        } else {
+            Log.e("MapsActivity", "Route does not have enough points to calculate initial bearing.")
+        }
+
+        initialPhoneAzimuth = currentAzimuth.get()
         Log.d("Simulation2", "Initial initialPhoneAzimuth: $initialPhoneAzimuth")
 
         // Initialize simulation variables
@@ -659,22 +672,22 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                 // val nextPoint = route.getOrNull(routeIndex + 1)
 
                 // Recalculate effective speed inside the runnable
-                // val effectiveSpeed = if (currentSpeed > 0f) currentSpeed else gpsSpeed
-                //val effectiveSpeed = if (gpsSpeed < 1.5) 0f else gpsSpeed
-                val effectiveSpeed =  22f
-                val simulationSpeed = (effectiveSpeed.takeIf { it > 0 } ?: 0f) / 3.6f  // Convert km/h to m/s
+                //val effectiveSpeed = if (currentSpeed.get() > 0f) currentSpeed.get() else gpsSpeed
+                val effectiveSpeed = if (gpsSpeed < 1) 0f else gpsSpeed
+                //val effectiveSpeed =  22f
+                val simulationSpeed = if (effectiveSpeed > 0.35f) effectiveSpeed / 3.6f else 0f  // Convert km/h to m/s
 
                 Log.d("Simulation2", "CurrentAzimuth in navigationRunnable: $currentAzimuth")
                 Log.d("Simulation", "Simulation speed: $simulationSpeed m/s")
 
                 // Use currentAzimuth from sensors
-                val angleDifference = calculationManager.calculateAngleDifference(simulatedAzimuth, currentAzimuth)
+                val angleDifference = calculationManager.calculateAngleDifference(simulatedAzimuth, currentAzimuth.get())
                 if (angleDifference in -45f..45f) {
-                    angle = (simulatedAzimuth + (currentAzimuth - initialPhoneAzimuth) + 360) % 360
-                    Log.d("Simulation2", "Initial angle updated to: $angle")
+                    angle = (simulatedAzimuth + (currentAzimuth.get() - initialPhoneAzimuth) + 360) % 360
+                    Log.d("Simulation3", "Initial angle updated to: $angle")
                 } else {
-                    angle = currentAzimuth
-                    Log.d("Simulation3", "Initial azimuth difference ($angleDifference°) exceeds ±45°. Update skipped.")
+                    angle = currentAzimuth.get()
+                    Log.d("Simulation3", "angle azimuth difference ($angle°) exceeds ±45°. Update skipped.")
                     //Toast.makeText(this, "Initial azimuth difference exceeds ±45°. Navigation may not align correctly.", Toast.LENGTH_SHORT).show()
                 }
                 //val angle = simulatedAzimuth +(currentAzimuth.toDouble() - initialPhoneAzimuth.toDouble())
@@ -692,7 +705,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
 
                 // Update speed display
                 onSpeedUpdated(simulationSpeed * 3.6f)
-
+                var zoom = adjustZoomBasedOnSpeed(simulationSpeed)
                 // Calculate new position using CalculationManager
                 val newPositionPair = calculationManager.calculateNewPosition(
                     latPrev = currentLatLng?.latitude ?: currentPoint.latitude,
@@ -712,7 +725,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                 var closestIndex: Int? = null
                 var simulatedAzimuth2 = simulatedAzimuth
 
-                if (diffFindClosestPointTime >= 1500) {  // Check if 1.5 seconds have passed
+                if (diffFindClosestPointTime >= 1000) {  // Check if 1 seconds have passed
                     lastFindClosestPointTime = currentTime
 
                     // Find the index of the closest point within threshold, excluding current index
@@ -722,7 +735,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                     if (closestIndex != null) {
                         // Calculate the angular difference between the new simulated azimuth and the current azimuth
                         simulatedAzimuth2 = calculateBearing(route[closestIndex], route.getOrNull(closestIndex + 2) ?: route[closestIndex])
-                        val angleDifference = calculationManager.calculateAngleDifference(simulatedAzimuth2, currentAzimuth)
+                        val angleDifference = calculationManager.calculateAngleDifference(simulatedAzimuth2, currentAzimuth.get())
                         routeIndex = closestIndex
 
                         // Proceed with the update only if the angular difference is within ±45 degrees
@@ -730,9 +743,11 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                             currentLatLng = route[closestIndex]
 
                             // Update initialPhoneAzimuth and simulatedAzimuth only if within threshold
-                            initialPhoneAzimuth = currentAzimuth
+                            initialPhoneAzimuth = currentAzimuth.get()
                             simulatedAzimuth = simulatedAzimuth2
                         } else {
+                            initialPhoneAzimuth = currentAzimuth.get()
+                            simulatedAzimuth = currentAzimuth.get()
                             Log.d("Simulation3", "Azimuth difference ($angleDifference°) exceeds ±45°. Update skipped.")
                         }
                     } else {
@@ -764,7 +779,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                 currentLatLng?.let { latLng ->
                     val newCameraPosition = CameraPosition.Builder()
                         .target(latLng)
-                        .zoom(mMap.cameraPosition.zoom)
+                        .zoom(zoom)
                         .tilt(currentTilt)
                         .bearing(angle)
                         .build()
@@ -774,7 +789,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                 }
 
                 // Schedule next update
-                handler.postDelayed(this, 100)  // Update every 100 milliseconds for real-time updates
+                handler.postDelayed(this, 200)  // Update every 200 milliseconds for real-time updates
             }
         }
         // Start navigation simulation
@@ -782,33 +797,57 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
     }
 
 
+    /**
+     * Animates the marker from its current position to the specified position smoothly.
+     *
+     * @param marker The marker to animate.
+     * @param toPosition The target position to move the marker to.
+     */
     private fun animateMarker(marker: Marker, toPosition: LatLng) {
+        // Cancel any existing animator to prevent overlapping animations
+        currentMarkerAnimator?.cancel()
+
         val startPosition = marker.position
-        val duration = 500L  // Duration in milliseconds (e.g., 0.5 seconds)
-        val interpolator = LinearInterpolator()
-        val startTime = SystemClock.uptimeMillis()
-        handler.post(object : Runnable {
-            override fun run() {
-                val elapsed = SystemClock.uptimeMillis() - startTime
-                val t = (elapsed / duration.toFloat()).coerceIn(0f, 1f)
-                val factor = interpolator.getInterpolation(t)
+        val endPosition = toPosition
 
-                val lat = factor * toPosition.latitude + (1 - factor) * startPosition.latitude
-                val lng = factor * toPosition.longitude + (1 - factor) * startPosition.longitude
+        // Create a ValueAnimator that goes from 0f to 1f
+        currentMarkerAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 750L // Duration of the animation in milliseconds (0.75 seconds)
+            interpolator = LinearInterpolator() // Ensures a smooth linear animation
+
+            // Listener to update the marker's position on each animation frame
+            addUpdateListener { animation ->
+                val t = animation.animatedValue as Float
+
+                // Calculate the new latitude and longitude using linear interpolation
+                val lat = (endPosition.latitude - startPosition.latitude) * t + startPosition.latitude
+                val lng = (endPosition.longitude - startPosition.longitude) * t + startPosition.longitude
+
+                // Update the marker's position
                 marker.position = LatLng(lat, lng)
-
-                if (t < 1.0f) {
-                    handler.postDelayed(this, 16)  // Approximately 60 FPS
-                }
             }
-        })
+
+            // Start the animation
+            start()
+        }
+    }
+
+
+    private fun adjustZoomBasedOnSpeed(speedKmh: Float): Float {
+        val desiredZoom = when {
+            speedKmh < 20 -> 20f
+            speedKmh < 40 -> 18f
+            speedKmh < 60 -> 16f
+            else -> 14f
+        }
+        return desiredZoom
     }
 
 
     // ObdDataListener implementation
     @SuppressLint("SetTextI18n", "DefaultLocale")
     override fun onSpeedUpdated(speed: Float) {
-        currentSpeed = speed
+        currentSpeed.set(speed)
         // Format the speed to one decimal place
         val formattedSpeed = String.format("%.1f", speed)
         runOnUiThread {

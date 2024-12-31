@@ -107,12 +107,12 @@ class CalculationManager {
         currentIndex: Int,
         simulationSpeed: Float // Speed in m/s
     ): Int? {
-        val SOME_THRESHOLD = simulationSpeed * 1.4  // Dynamic threshold based on speed (meters)
+        val SOME_THRESHOLD = simulationSpeed * 0.9  // Dynamic threshold based on speed (meters)
         val MIN_THRESHOLD = 0.5f  // Minimum threshold in meters
         var closestIndex: Int? = null
         var smallestDistance = Double.MAX_VALUE
 
-        // Define the range: next 10 points after currentIndex
+        // Define the range: next 30 points after currentIndex
         val start = currentIndex + 1
         val end = (currentIndex + 30).coerceAtMost(route.size - 1)
 
@@ -126,6 +126,7 @@ class CalculationManager {
 
         return closestIndex
     }
+
 
     /**
      * Calculates the smallest difference between two angles in degrees.
