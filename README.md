@@ -16,8 +16,6 @@ This is an Android application that provides real-time navigation without relyin
 To run this application, you need:
 
 - Android Studio 4.0+ installed.
-- Python 3.8+ for the backend server.
-- Flask library for the backend.
 - Access to Google Maps SDK for Android.
 - Android device with compass and speed sensors.
 
